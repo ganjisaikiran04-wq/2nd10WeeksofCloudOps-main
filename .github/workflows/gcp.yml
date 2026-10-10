@@ -1,14 +1,128 @@
+# name: Build, Push Images & Update Manifests
+
+# on:
+#   # push:
+#   #   branches:
+#   #     - main
+#     workflow_dispatch:
+
+
+# env:
+#   PROJECT_ID: '${{ secrets.projectid }}'
+#   REGION: us-central1
+#   REPOSITORY: fullstack
+
+# jobs:
+#   build-and-push:
+#     runs-on: ubuntu-latest
+
+#     permissions:
+#       contents: write
+#       id-token: write
+
+#     steps:
+#       # Checkout Repository
+#       - name: Checkout Code
+#         uses: actions/checkout@v4
+#         with:
+#           fetch-depth: 0
+#           token: ${{ secrets.GIT_TOKEN }}
+
+#       # Authenticate to GCP
+#       - name: Authenticate to Google Cloud
+#         uses: google-github-actions/auth@v2
+#         with:
+#           credentials_json: '${{ secrets.GCP_SA_KEY }}'
+
+#       # Install gcloud CLI
+#       - name: Setup gcloud
+#         uses: google-github-actions/setup-gcloud@v2
+
+#       # Configure Docker
+#       - name: Configure Docker
+#         run: |
+#           gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
+
+#       # Create Artifact Registry if it doesn't exist
+#       - name: Create Artifact Registry
+#         run: |
+#           gcloud artifacts repositories describe ${REPOSITORY} \
+#             --location=${REGION} \
+#             --project=${PROJECT_ID} >/dev/null 2>&1 || \
+#           gcloud artifacts repositories create ${REPOSITORY} \
+#             --repository-format=docker \
+#             --location=${REGION} \
+#             --description="Docker Repository"
+
+#       ####################################################
+#       # Build Frontend
+#       ####################################################
+
+#       - name: Build Frontend Image
+#         run: |
+#           docker build -t frontend:${{ github.sha }} ./client
+
+#       - name: Push Frontend Image
+#         run: |
+#           FRONTEND_IMAGE=${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/frontend:${{ github.sha }}
+
+#           docker tag frontend:${{ github.sha }} ${FRONTEND_IMAGE}
+#           docker push ${FRONTEND_IMAGE}
+
+#       ####################################################
+#       # Build Backend
+#       ####################################################
+
+#       - name: Build Backend Image
+#         run: |
+#           docker build -t backend:${{ github.sha }} ./backend
+
+#       - name: Push Backend Image
+#         run: |
+#           BACKEND_IMAGE=${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/backend:${{ github.sha }}
+
+#           docker tag backend:${{ github.sha }} ${BACKEND_IMAGE}
+#           docker push ${BACKEND_IMAGE}
+
+#       ####################################################
+#       # Update Kubernetes YAML Files
+#       ####################################################
+
+#       - name: Update Deployment Manifests
+#         run: |
+#           FRONTEND_IMAGE=${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/frontend:${{ github.sha }}
+#           BACKEND_IMAGE=${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/backend:${{ github.sha }}
+
+#           sed -i "s|image:.*|image: ${FRONTEND_IMAGE}|g" kubernetes-files/frontend-deployment.yml
+#           sed -i "s|image:.*|image: $BACKEND_IMAGE|g" kubernetes-files/backend-deployment.yaml
+
+#       ####################################################
+#       # Commit Updated YAMLs
+#       ####################################################
+
+#       - name: Commit Changes
+#         run: |
+#           git config --global user.name "github-actions"
+#           git config --global user.email "github-actions@github.com"
+
+#           git add kubernetes-files/frontend-deployment.yml
+#           git add kubernetes-files/backend-deployment.yaml
+
+#           if git diff --cached --quiet; then
+#             echo "No changes to commit."
+#           else
+#             git commit -m "Update image tags to ${{ github.sha }}"
+#             git push origin main
+#           fi
+
+
 name: Build, Push Images & Update Manifests
 
 on:
-  # push:
-  #   branches:
-  #     - main
-    workflow_dispatch:
-
+  workflow_dispatch:
 
 env:
-  PROJECT_ID: '${{ secrets.projectid }}'
+  PROJECT_ID: ${{ secrets.projectid }}
   REGION: us-central1
   REPOSITORY: fullstack
 
@@ -21,89 +135,61 @@ jobs:
       id-token: write
 
     steps:
-      # Checkout Repository
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GIT_TOKEN }}
 
-      # Authenticate to GCP
+      # Authenticate using Workload Identity Federation
       - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@v3
         with:
-          credentials_json: '${{ secrets.GCP_SA_KEY }}'
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
 
-      # Install gcloud CLI
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
 
-      # Configure Docker
       - name: Configure Docker
-        run: |
-          gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 
-      # Create Artifact Registry if it doesn't exist
-      - name: Create Artifact Registry
+      # The repository should preferably be created once in advance.
+      - name: Verify Artifact Registry
         run: |
-          gcloud artifacts repositories describe ${REPOSITORY} \
-            --location=${REGION} \
-            --project=${PROJECT_ID} >/dev/null 2>&1 || \
-          gcloud artifacts repositories create ${REPOSITORY} \
-            --repository-format=docker \
-            --location=${REGION} \
-            --description="Docker Repository"
-
-      ####################################################
-      # Build Frontend
-      ####################################################
+          gcloud artifacts repositories describe "${REPOSITORY}" \
+            --location="${REGION}" \
+            --project="${PROJECT_ID}"
 
       - name: Build Frontend Image
-        run: |
-          docker build -t frontend:${{ github.sha }} ./client
+        run: docker build -t frontend:${{ github.sha }} ./client
 
       - name: Push Frontend Image
         run: |
-          FRONTEND_IMAGE=${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/frontend:${{ github.sha }}
-
-          docker tag frontend:${{ github.sha }} ${FRONTEND_IMAGE}
-          docker push ${FRONTEND_IMAGE}
-
-      ####################################################
-      # Build Backend
-      ####################################################
+          FRONTEND_IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/frontend:${{ github.sha }}"
+          docker tag frontend:${{ github.sha }} "$FRONTEND_IMAGE"
+          docker push "$FRONTEND_IMAGE"
 
       - name: Build Backend Image
-        run: |
-          docker build -t backend:${{ github.sha }} ./backend
+        run: docker build -t backend:${{ github.sha }} ./backend
 
       - name: Push Backend Image
         run: |
-          BACKEND_IMAGE=${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/backend:${{ github.sha }}
-
-          docker tag backend:${{ github.sha }} ${BACKEND_IMAGE}
-          docker push ${BACKEND_IMAGE}
-
-      ####################################################
-      # Update Kubernetes YAML Files
-      ####################################################
+          BACKEND_IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/backend:${{ github.sha }}"
+          docker tag backend:${{ github.sha }} "$BACKEND_IMAGE"
+          docker push "$BACKEND_IMAGE"
 
       - name: Update Deployment Manifests
         run: |
-          FRONTEND_IMAGE=${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/frontend:${{ github.sha }}
-          BACKEND_IMAGE=${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/backend:${{ github.sha }}
+          FRONTEND_IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/frontend:${{ github.sha }}"
+          BACKEND_IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/backend:${{ github.sha }}"
 
           sed -i "s|image:.*|image: ${FRONTEND_IMAGE}|g" kubernetes-files/frontend-deployment.yml
-          sed -i "s|image:.*|image: $BACKEND_IMAGE|g" kubernetes-files/backend-deployment.yaml
-
-      ####################################################
-      # Commit Updated YAMLs
-      ####################################################
+          sed -i "s|image:.*|image: ${BACKEND_IMAGE}|g" kubernetes-files/backend-deployment.yaml
 
       - name: Commit Changes
         run: |
-          git config --global user.name "github-actions"
-          git config --global user.email "github-actions@github.com"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           git add kubernetes-files/frontend-deployment.yml
           git add kubernetes-files/backend-deployment.yaml
@@ -112,5 +198,5 @@ jobs:
             echo "No changes to commit."
           else
             git commit -m "Update image tags to ${{ github.sha }}"
-            git push origin main
+            git push origin HEAD:main
           fi
